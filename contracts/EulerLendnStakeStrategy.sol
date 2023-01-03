@@ -115,6 +115,19 @@ contract Strategy is BaseStrategy {
             emit WithdrawStaking(balance, eToken.convertBalanceToUnderlying(balance));
         }
     }
+    //_amount in underlying!
+    function  _withdrawLending(uint256 _amount) internal {
+        if (_amount == 0) {
+            return;
+        }
+        uint256 balance = eToken.balanceOfUnderlying(address(this));
+        if (balance >= _amount ){
+            eToken.withdraw(0,_amount);
+            emit WithdrawLending(eToken.convertUnderlyingToBalance(_amount), _amount);
+        } else  {
+            _exitLending();
+        }
+    }
     function  _exitStaking() internal {
         if (eStaking.balanceOf(address(this)) > 0){
             uint256 amount = eStaking.balanceOf(address(this));
@@ -183,8 +196,6 @@ contract Strategy is BaseStrategy {
             eStaking.getReward();
             _sellEulerForWant();
         }
-
-
         // get positions
         // local in strategy in want
         uint256 local = want.balanceOf(address(this));
@@ -197,50 +208,51 @@ contract Strategy is BaseStrategy {
         uint256 total = local.add(staked).add(lent);
         // total debt in want
         uint256 debt = vault.strategies(address(this)).totalDebt;
+        uint256 liquidity = IERC20(address(vault.token())).balanceOf(EULER);
+        uint256 totalLiquidity = liquidity.add(local);
 
+        _profit =  total > debt ? total.sub(debt) : 0;
+        _loss = debt > total ? debt.sub(total) : 0;
+        uint toBeFreedUp = _debtOutstanding.add(_profit);
+        // something went wrong and we have too much debt - we just need to withdraw all
 
-        // no withdrawals only reporting
-        if (_debtOutstanding == 0) {
-            _profit=total.sub(debt);
-            _loss = 0;
-            _debtPayment = 0;
-            return (_profit, _loss, _debtPayment);
-        }
-
-        //something went wrong or we just need to withdraw all
-        if (debt > total || _debtOutstanding >= total) {
-            _loss = debt.sub(total);
-            _profit = 0;
-            _debtPayment = total;
-            // unstake
-            _exitStaking();
-            // withdraw all lent out (removing max is a special case and liquidates the position)
-            _exitLending();
-        } else {
-            _profit=total.sub(debt);
-            _loss = 0;
-            _debtPayment = _debtOutstanding;
-
-            // Do we need to unstake stuff?
-            if (local.add(lent) < _debtOutstanding) {
-                // remaining debt to unwind in want
-                uint256 remainingToFree = _debtOutstanding.sub(local.add(lent));
-                // remaining debt to unwind in eTokens (round up - is caught in _withdrawStaking!)
-                uint256 remainingToFreeETokens = eToken.convertUnderlyingToBalance(remainingToFree)+1;
-                //unstake calculated amount -> goes into lent out
-                _withdrawStaking(remainingToFreeETokens);
-                _exitLending();
-
-            // do we need to withdraw from lending?
-            } else if (local.add(lent) >= _debtOutstanding && local < _debtOutstanding) {
+        if (totalLiquidity >= toBeFreedUp) {
+            if (total >= debt) {
+                _debtPayment = _debtOutstanding;
+                // Do we need to unstake stuff?
+                uint256 unstaked = local.add(lent);
+                if (unstaked < toBeFreedUp) {
+                    // remaining debt to unwind in want
+                    uint256 remainingToFree = toBeFreedUp.sub(unstaked);
+                    // remaining debt to unwind in eTokens (round up - is caught in _withdrawStaking!)
+                    uint256 remainingToFreeETokens = eToken.convertUnderlyingToBalance(remainingToFree);
+                    //unstake calculated amount -> goes into lent out
+                    _withdrawStaking(remainingToFreeETokens);
+                    _exitLending();
+                // do we need to withdraw from lending?
+                } else if (toBeFreedUp > local) {
+                    _withdrawLending(toBeFreedUp.sub(local));
+                } else {
+                    //no action required
+                }
+            // oh no - debt > total
+            } else {
+                // unstake
+                _exitStaking();
+                // withdraw all lent out (removing max is a special case and liquidates the position)
                 _exitLending();
             }
 
-            _profit= estimatedTotalAssets().sub(debt);
-            _loss = 0;
-            _debtPayment = _debtOutstanding;            
+        // totalLiquidity < toBeFreedUp - withdraw as much as possible
+        } else {
+            _withdrawStaking(eToken.convertUnderlyingToBalance(liquidity));
+            _withdrawLending(liquidity);
         }
-        emit ReportLocal(want.balanceOf(address(this)));
+        uint256 freedUp = want.balanceOf(address(this));
+        _profit = freedUp > _debtOutstanding ? freedUp.sub(_debtOutstanding) : 0;
+        _loss = freedUp < _debtOutstanding ? _debtOutstanding.sub(freedUp) : 0;
+        _debtPayment = _debtOutstanding > freedUp ? freedUp : _debtOutstanding;
+        emit ReportLocal(freedUp);
         emit PrepareReturnReport(_profit, _loss, _debtPayment);
         return (_profit, _loss, _debtPayment);
     }
@@ -253,8 +265,9 @@ contract Strategy is BaseStrategy {
 
         // Discuss: Check if we can withdraw _debtOutstanding from Euler (Maybe if borrow utilization is at 100% its not possible?!)
         // if _debtOutstanding is > than liquidity to withdraw in Euler + Safety Margin -> free up _debtOutstanding instantly to be safe
-        
         uint256 local = want.balanceOf(address(this));
+        uint256 liquidity = IERC20(address(vault.token())).balanceOf(EULER);
+        uint256 totalLiquidity = liquidity.add(local);
         uint256 totalDebt = vault.strategies(address(this)).totalDebt;
         emit AdjustPositionReport(local, _debtOutstanding, totalDebt);
         // if you can deposit something - do it.
@@ -264,6 +277,16 @@ contract Strategy is BaseStrategy {
             _depositStaking(toStake);
             emit ReportLocal(want.balanceOf(address(this)));
         }
+        // defensive - remove as much as possible if liquidity is limited -> 100% utilization rate
+        // if (local > 0 && totalLiquidity > totalDebt && totalLiquidity > _debtOutstanding) {
+        //     _depositLending(local);
+        //     uint256 toStake= eToken.balanceOf(address(this));
+        //     _depositStaking(toStake);
+        // } else if (totalLiquidity <= totalDebt || totalLiquidity <= _debtOutstanding) {
+        //     _withdrawStaking(eToken.covertUnderlyingToBalance(liquidity));
+        //     _withdrawLending(liquidity);
+        // }
+        // emit ReportLocal(want.balanceOf(address(this)));
     }
 
     function liquidatePosition(uint256 _amountNeeded)
@@ -415,28 +438,24 @@ contract Strategy is BaseStrategy {
                 }
         }
     }
-
-
-
     //HELPER Functions for debug or recovery
     function refundETH() external onlyEmergencyAuthorized {
         uniswapRouter.refundETH();
     }
 
-    function getBalances() external view onlyEmergencyAuthorized returns (uint256, uint256, uint256) {
-        return (WETH9.balanceOf(address(this)), eToken.balanceOf(address(this)), eStaking.balanceOf(address(this)));
-    }
+    // function getBalances() external view onlyEmergencyAuthorized returns (uint256, uint256, uint256) {
+    //     return (WETH9.balanceOf(address(this)), eToken.balanceOf(address(this)), eStaking.balanceOf(address(this)));
+    // }
     function remaxApproval() external onlyEmergencyAuthorized {
         IERC20(address(vault.token())).approve(EULER, type(uint).max);
         IERC20(address(eToken)).approve(address(eStaking), type(uint).max);
         IERC20(address(EULER_ERC20)).approve(address(uniswapRouter), type(uint).max);
     }
-    function revokeApproval() external onlyEmergencyAuthorized {
-        IERC20(address(vault.token())).approve(EULER, 0);
-        IERC20(address(eToken)).approve(address(eStaking), 0);
-        IERC20(address(EULER_ERC20)).approve(address(uniswapRouter), 0);
-    }
-
+    // function revokeApproval() external onlyEmergencyAuthorized {
+    //     IERC20(address(vault.token())).approve(EULER, 0);
+    //     IERC20(address(eToken)).approve(address(eStaking), 0);
+    //     IERC20(address(EULER_ERC20)).approve(address(uniswapRouter), 0);
+    // }
     function exitStake() external onlyEmergencyAuthorized {
         eStaking.exit();
     }

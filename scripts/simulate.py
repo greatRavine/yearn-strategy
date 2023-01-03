@@ -79,7 +79,7 @@ def main():
     vault.addStrategy(strategy, params[2], 0, 10**21, 1000, {"from": gov})
 
     # load Strategy with tokens
-    print(f"{strategy.getBalances()}");
+    # print(f"{strategy.getBalances()}");
     tx = (strategy.harvest({"from": gov}))
     print(f"{tx.info()}")
     tx = (strategy.tend({"from": gov}))
