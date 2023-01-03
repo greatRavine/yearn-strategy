@@ -144,7 +144,7 @@ contract Strategy is BaseStrategy {
 
     function name() external view override returns (string memory) {
         // DS TODO: Get TokenType from want or vault
-        return "StrategyEulerLendnStake";
+        return string(abi.encodePacked("StrategyEulerLendnStake ", vault.symbol()));
     }
 
     function estimatedTotalAssets() public view override returns (uint256) {
