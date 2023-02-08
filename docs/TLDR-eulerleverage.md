@@ -18,11 +18,11 @@
 
 * Epoch is roughly 2 weeks
 
-![image-20230208105616599](C:\Users\dsomm\AppData\Roaming\Typora\typora-user-images\image-20230208105616599.png)
+![image-20230208105616599](image-20230208105616599.png)
 
 * sorted by total borrowed assets
 
-![image-20230208104012691](C:\Users\dsomm\AppData\Roaming\Typora\typora-user-images\image-20230208104012691.png)
+![image-20230208104012691](image-20230208104012691.png)
 
 Msg from Kasper:
 
